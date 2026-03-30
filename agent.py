@@ -279,9 +279,9 @@ def run_agent():
     print(f"Trading Agent Run — {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
     print(f"{'='*60}")
 
-    if not is_market_open():
-        print("Market is closed. Exiting.")
-        return
+ if False:  # market check disabled for testing
+    print("Market is closed. Exiting.")
+    return
 
     sheet = get_sheet()
     now = datetime.datetime.now(IST)
