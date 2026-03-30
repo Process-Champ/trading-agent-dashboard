@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(layout="wide")
 
@@ -10,12 +10,15 @@ st.title("📊 LIVE Trading Dashboard")
 # ================= LOAD DATA =================
 def load_data():
     scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/spreadsheets"
     ]
 
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        "credentials.json", scope)
+    # Use Streamlit Secrets (instead of credentials.json)
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scope
+    )
 
     client = gspread.authorize(creds)
     sheet = client.open("TradingData").sheet1
@@ -23,7 +26,12 @@ def load_data():
     data = sheet.get_all_records()
     return pd.DataFrame(data)
 
-df = load_data()
+# Load data safely
+try:
+    df = load_data()
+except Exception as e:
+    st.error(f"Error loading data: {e}")
+    st.stop()
 
 if df.empty:
     st.warning("No trades yet")
@@ -37,11 +45,15 @@ for _, row in df.iterrows():
     symbol = row["symbol"]
 
     if row["action"] == "BUY":
-        positions[symbol] = row["price"]
+        positions[symbol] = {
+            "price": row["price"],
+            "qty": row["qty"]
+        }
 
     elif row["action"] == "SELL" and symbol in positions:
-        entry = positions[symbol]
-        pnl += (row["price"] - entry) * row["qty"]
+        entry = positions[symbol]["price"]
+        qty = positions[symbol]["qty"]
+        pnl += (row["price"] - entry) * qty
         del positions[symbol]
 
 # ================= METRICS =================
