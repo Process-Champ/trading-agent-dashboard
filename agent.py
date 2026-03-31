@@ -11,28 +11,16 @@ import datetime
 import pytz
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import gspread
 from google.oauth2.service_account import Credentials
-from upstox_client import ApiClient, Configuration, MarketQuoteApi
-import upstox_client
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
+IST = pytz.timezone("Asia/Kolkata")
 
 STOCKS = [
-    "RELIANCE.NS",
-    "TCS.NS",
-    "HDFCBANK.NS",
-    "INFY.NS",
-    "ICICIBANK.NS",
-    "HINDUNILVR.NS",
-    "ITC.NS",
-    "SBIN.NS",
-    "BAJFINANCE.NS",
-    "KOTAKBANK.NS",
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BAJFINANCE.NS", "KOTAKBANK.NS",
 ]
 
-# NSE symbols for Upstox (instrument keys)
 UPSTOX_SYMBOLS = {
     "RELIANCE.NS":   "NSE_EQ|INE002A01018",
     "TCS.NS":        "NSE_EQ|INE467B01029",
@@ -47,34 +35,23 @@ UPSTOX_SYMBOLS = {
 }
 
 GOOGLE_SHEET_NAME = "Trading data"
-IST = pytz.timezone("Asia/Kolkata")
-
-# Signal thresholds
 RSI_OVERSOLD   = 35
 RSI_OVERBOUGHT = 65
-VOLUME_SPIKE   = 1.5   # 1.5x average volume = significant
+VOLUME_SPIKE   = 1.5
 
-
-# ─── GOOGLE SHEETS SETUP ──────────────────────────────────────────────────────
 
 def get_sheet():
-    """Authenticate and return the Google Sheet worksheet."""
     scopes = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
     ]
-    # Credentials loaded from GitHub Secret (JSON string stored in env var)
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if not creds_json:
         raise EnvironmentError("GOOGLE_CREDENTIALS_JSON env var not set")
-
     creds_dict = json.loads(creds_json)
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
-
     spreadsheet = client.open(GOOGLE_SHEET_NAME)
-
-    # Use 'Signals' worksheet, create if missing
     try:
         sheet = spreadsheet.worksheet("Signals")
     except gspread.WorksheetNotFound:
@@ -82,67 +59,101 @@ def get_sheet():
         headers = [
             "Date", "Time", "Symbol", "LTP", "Signal",
             "RSI", "MACD", "MACD_Signal", "EMA9", "EMA21",
-            "Volume", "Avg_Volume", "Vol_Ratio",
-            "Confidence", "Notes"
+            "Volume", "Avg_Volume", "Vol_Ratio", "Confidence", "Notes"
         ]
         sheet.append_row(headers)
     return sheet
 
 
-# ─── DATA FETCHING ────────────────────────────────────────────────────────────
+def fetch_historical(symbol: str) -> pd.DataFrame:
+    """Fetch data using Yahoo Finance direct API - works on GitHub Actions."""
+    import requests
 
-def fetch_upstox_ltp(symbol: str) -> float | None:
-    """Fetch live LTP from Upstox sandbox. Returns None on failure."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://finance.yahoo.com",
+        "Referer": "https://finance.yahoo.com/",
+    }
+
+    # Try 15m data first (last 30 days)
+    url = (
+        f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
+        f"?interval=15m&range=30d&includePrePost=false"
+    )
     try:
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        result = data["chart"]["result"][0]
+        timestamps = result["timestamp"]
+        ohlcv = result["indicators"]["quote"][0]
+        df = pd.DataFrame({
+            "Open":   ohlcv["open"],
+            "High":   ohlcv["high"],
+            "Low":    ohlcv["low"],
+            "Close":  ohlcv["close"],
+            "Volume": ohlcv["volume"],
+        }, index=pd.to_datetime(timestamps, unit="s", utc=True))
+        df.dropna(inplace=True)
+        print(f"  Fetched {len(df)} rows via Yahoo API")
+        return df
+    except Exception as e:
+        print(f"  Yahoo API (15m) failed: {e}")
+
+    # Fallback: daily data
+    url_daily = (
+        f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
+        f"?interval=1d&range=3mo&includePrePost=false"
+    )
+    try:
+        r = requests.get(url_daily, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        result = data["chart"]["result"][0]
+        timestamps = result["timestamp"]
+        ohlcv = result["indicators"]["quote"][0]
+        df = pd.DataFrame({
+            "Open":   ohlcv["open"],
+            "High":   ohlcv["high"],
+            "Low":    ohlcv["low"],
+            "Close":  ohlcv["close"],
+            "Volume": ohlcv["volume"],
+        }, index=pd.to_datetime(timestamps, unit="s", utc=True))
+        df.dropna(inplace=True)
+        print(f"  Fetched {len(df)} rows via Yahoo daily fallback")
+        return df
+    except Exception as e2:
+        print(f"  Yahoo daily fallback failed: {e2}")
+        return pd.DataFrame()
+
+
+def fetch_upstox_ltp(symbol: str):
+    try:
+        from upstox_client import ApiClient, Configuration, MarketQuoteApi
         token = os.environ.get("UPSTOX_ACCESS_TOKEN")
         if not token:
             return None
-
         config = Configuration()
         config.access_token = token
-        # Point to sandbox
         config.host = "https://api-v2.upstox.com"
-
         api_client = ApiClient(config)
         api = MarketQuoteApi(api_client)
-
         instrument_key = UPSTOX_SYMBOLS.get(symbol)
         if not instrument_key:
             return None
-
         resp = api.get_full_market_quote([instrument_key], api_version="2.0")
         data = resp.data
         if data:
             first = list(data.values())[0]
             return float(first.last_price)
     except Exception as e:
-        print(f"  Upstox LTP fetch failed for {symbol}: {e}")
+        print(f"  Upstox LTP fetch failed: {e}")
     return None
 
 
-def fetch_historical(symbol: str, period: str = "1mo", interval: str = "15m") -> pd.DataFrame:
-    """Fetch OHLCV data via yfinance with headers to bypass cloud runner block."""
-    import requests
-    try:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        })
-        ticker = yf.Ticker(symbol, session=session)
-        df = ticker.history(period=period, interval=interval)
-        if df.empty:
-            df = ticker.history(period=period, interval="1d")
-        df.dropna(inplace=True)
-        return df
-    except Exception as e:
-        print(f"  yfinance fetch failed for {symbol}: {e}")
-        return pd.DataFrame()
-
-
-# ─── INDICATORS ───────────────────────────────────────────────────────────────
-
-def calc_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+def calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -152,7 +163,7 @@ def calc_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def calc_macd(series: pd.Series, fast=12, slow=26, signal=9):
+def calc_macd(series, fast=12, slow=26, signal=9):
     ema_fast = series.ewm(span=fast, adjust=False).mean()
     ema_slow = series.ewm(span=slow, adjust=False).mean()
     macd_line = ema_fast - ema_slow
@@ -160,56 +171,38 @@ def calc_macd(series: pd.Series, fast=12, slow=26, signal=9):
     return macd_line, signal_line
 
 
-def calc_ema(series: pd.Series, period: int) -> pd.Series:
+def calc_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 
-def calc_volume_ratio(volume: pd.Series, window: int = 20) -> pd.Series:
+def calc_volume_ratio(volume, window=20):
     avg_vol = volume.rolling(window=window).mean()
     return volume / avg_vol.replace(0, np.nan)
 
 
-# ─── SIGNAL LOGIC ─────────────────────────────────────────────────────────────
-
-def generate_signal(df: pd.DataFrame) -> dict:
-    """
-    Multi-indicator signal scoring system.
-
-    Score: each bullish condition adds +1, bearish adds -1
-      RSI oversold       → +1 (buy pressure)
-      RSI overbought     → -1 (sell pressure)
-      MACD crossover up  → +1
-      MACD crossover dn  → -1
-      EMA9 > EMA21       → +1 (uptrend)
-      EMA9 < EMA21       → -1 (downtrend)
-      Volume spike       → amplifies score (×1.5)
-
-    Final:
-      score >= +2  → BUY
-      score <= -2  → SELL
-      else         → HOLD
-    """
+def generate_signal(df):
     if len(df) < 30:
-        return {"signal": "HOLD", "confidence": "LOW", "notes": "Insufficient data"}
+        return {"signal": "HOLD", "confidence": "LOW", "rsi": 0, "macd": 0,
+                "macd_signal": 0, "ema9": 0, "ema21": 0, "volume": 0,
+                "avg_volume": 0, "vol_ratio": 0, "notes": "Insufficient data"}
 
     close = df["Close"]
     volume = df["Volume"]
 
     rsi = calc_rsi(close).iloc[-1]
     macd, macd_sig = calc_macd(close)
-    macd_val = macd.iloc[-1]
-    macd_sig_val = macd_sig.iloc[-1]
-    macd_prev = macd.iloc[-2]
+    macd_val      = macd.iloc[-1]
+    macd_sig_val  = macd_sig.iloc[-1]
+    macd_prev     = macd.iloc[-2]
     macd_sig_prev = macd_sig.iloc[-2]
-    ema9  = calc_ema(close, 9).iloc[-1]
-    ema21 = calc_ema(close, 21).iloc[-1]
-    vol_ratio = calc_volume_ratio(volume).iloc[-1]
+    ema9       = calc_ema(close, 9).iloc[-1]
+    ema21      = calc_ema(close, 21).iloc[-1]
+    vol_ratio  = calc_volume_ratio(volume).iloc[-1]
     avg_volume = volume.rolling(20).mean().iloc[-1]
 
     score = 0
     notes_parts = []
 
-    # RSI
     if rsi < RSI_OVERSOLD:
         score += 1
         notes_parts.append(f"RSI oversold({rsi:.1f})")
@@ -217,21 +210,19 @@ def generate_signal(df: pd.DataFrame) -> dict:
         score -= 1
         notes_parts.append(f"RSI overbought({rsi:.1f})")
 
-    # MACD crossover (current bar crossed)
     macd_crossed_up = (macd_prev < macd_sig_prev) and (macd_val >= macd_sig_val)
     macd_crossed_dn = (macd_prev > macd_sig_prev) and (macd_val <= macd_sig_val)
     if macd_crossed_up:
         score += 1
-        notes_parts.append("MACD↑cross")
+        notes_parts.append("MACD cross up")
     elif macd_crossed_dn:
         score -= 1
-        notes_parts.append("MACD↓cross")
+        notes_parts.append("MACD cross dn")
     elif macd_val > macd_sig_val:
         score += 0.5
-    elif macd_val < macd_sig_val:
+    else:
         score -= 0.5
 
-    # EMA trend
     if ema9 > ema21:
         score += 1
         notes_parts.append("EMA uptrend")
@@ -239,12 +230,10 @@ def generate_signal(df: pd.DataFrame) -> dict:
         score -= 1
         notes_parts.append("EMA downtrend")
 
-    # Volume amplifier
     if vol_ratio > VOLUME_SPIKE:
         score = score * 1.5
-        notes_parts.append(f"Vol spike×{vol_ratio:.1f}")
+        notes_parts.append(f"Vol spike x{vol_ratio:.1f}")
 
-    # Final signal
     if score >= 2:
         signal = "BUY"
         confidence = "HIGH" if score >= 3 else "MEDIUM"
@@ -270,12 +259,9 @@ def generate_signal(df: pd.DataFrame) -> dict:
     }
 
 
-# ─── MAIN RUN ─────────────────────────────────────────────────────────────────
-
-def is_market_open() -> bool:
-    """Check if NSE market is currently open (9:15 AM – 3:30 PM IST, Mon–Fri)."""
+def is_market_open():
     now = datetime.datetime.now(IST)
-    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+    if now.weekday() >= 5:
         return False
     market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
     market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
@@ -284,7 +270,7 @@ def is_market_open() -> bool:
 
 def run_agent():
     print(f"\n{'='*60}")
-    print(f"Trading Agent Run — {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
+    print(f"Trading Agent Run - {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
     print(f"{'='*60}")
 
     if not is_market_open():
@@ -300,54 +286,39 @@ def run_agent():
 
     for symbol in STOCKS:
         print(f"\nProcessing {symbol}...")
-
-        # Fetch data
-        df = fetch_historical(symbol, period="1mo", interval="15m")
+        df = fetch_historical(symbol)
         if df.empty:
-            print(f"  Skipping {symbol} — no data")
+            print(f"  Skipping {symbol} - no data")
             continue
 
-        # Try Upstox for live LTP, fallback to last close
         ltp = fetch_upstox_ltp(symbol)
         if ltp is None:
             ltp = round(float(df["Close"].iloc[-1]), 2)
-            print(f"  Using yfinance close as LTP: ₹{ltp}")
+            print(f"  Using last close as LTP: Rs {ltp}")
         else:
-            print(f"  Upstox LTP: ₹{ltp}")
+            print(f"  Upstox LTP: Rs {ltp}")
 
         result = generate_signal(df)
         clean_symbol = symbol.replace(".NS", "")
 
         row = [
-            date_str,
-            time_str,
-            clean_symbol,
-            ltp,
-            result["signal"],
-            result["rsi"],
-            result["macd"],
-            result["macd_signal"],
-            result["ema9"],
-            result["ema21"],
-            result["volume"],
-            result["avg_volume"],
-            result["vol_ratio"],
-            result["confidence"],
-            result["notes"],
+            date_str, time_str, clean_symbol, ltp,
+            result["signal"], result["rsi"], result["macd"],
+            result["macd_signal"], result["ema9"], result["ema21"],
+            result["volume"], result["avg_volume"], result["vol_ratio"],
+            result["confidence"], result["notes"],
         ]
         rows_to_append.append(row)
 
-        signal_icon = "🟢" if result["signal"] == "BUY" else ("🔴" if result["signal"] == "SELL" else "⚪")
-        print(f"  {signal_icon} {result['signal']} [{result['confidence']}] — {result['notes']}")
+        icon = "BUY **" if result["signal"] == "BUY" else ("SELL **" if result["signal"] == "SELL" else "HOLD")
+        print(f"  {icon} [{result['confidence']}] - {result['notes']}")
+        time.sleep(1)
 
-        time.sleep(0.5)  # Small delay to avoid rate limits
-
-    # Batch write to Google Sheets
     if rows_to_append:
         sheet.append_rows(rows_to_append, value_input_option="USER_ENTERED")
-        print(f"\n✅ Wrote {len(rows_to_append)} rows to Google Sheets")
+        print(f"\nWrote {len(rows_to_append)} rows to Google Sheets")
     else:
-        print("\n⚠️  No data written — check API connections")
+        print("\nNo data written - all fetches failed")
 
     print(f"\nRun complete at {datetime.datetime.now(IST).strftime('%H:%M:%S IST')}\n")
 
