@@ -35,8 +35,8 @@ UPSTOX_SYMBOLS = {
 }
 
 GOOGLE_SHEET_NAME = "Trading data"
-RSI_OVERSOLD   = 35
-RSI_OVERBOUGHT = 65
+RSI_OVERSOLD   = 45
+RSI_OVERBOUGHT = 55
 VOLUME_SPIKE   = 1.5
 
 
@@ -234,10 +234,10 @@ def generate_signal(df):
         score = score * 1.5
         notes_parts.append(f"Vol spike x{vol_ratio:.1f}")
 
-    if score >= 2:
+    if score >= 1.5:
         signal = "BUY"
         confidence = "HIGH" if score >= 3 else "MEDIUM"
-    elif score <= -2:
+    elif score <= -1.5:
         signal = "SELL"
         confidence = "HIGH" if score <= -3 else "MEDIUM"
     else:
