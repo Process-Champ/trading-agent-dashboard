@@ -1,18 +1,13 @@
 """
 Trading Signal Agent - Nifty 50 Top 10 + 8 New Stocks
-Runs via GitHub Actions every 15 min during market hours (9:15 AM - 3:30 PM IST, Mon-Fri)
+Runs via GitHub Actions every hour, 24/7, 365 days
 Writes buy/sell/hold signals to Google Sheets
 
-IMPROVEMENTS v2:
-- ATR-based Stop Loss & Target
-- ADX trend strength filter (removes false signals)
-- Nifty 50 market trend filter
-- Signal cooldown (prevents overtrading)
-- Bollinger Bands
-- 8 new stocks added
-- Candlestick pattern detection
-- Time filter (avoids first/last 15 min noise)
-- Sector strength awareness via notes
+v3 CHANGES:
+- Removed market hours restriction — runs 24/7
+- Market status logged in every row (MARKET_OPEN / AFTER_HOURS / WEEKEND)
+- Signals during after-hours flagged as LOW confidence
+- All other v2 features retained
 """
 
 import os
@@ -27,10 +22,8 @@ from google.oauth2.service_account import Credentials
 
 IST = pytz.timezone("Asia/Kolkata")
 
-# ── Original 10 stocks ──────────────────────────────────────────────────────
-# ── + 8 new stocks added ────────────────────────────────────────────────────
 STOCKS = [
-    # Original
+    # Original 10
     "RELIANCE.NS",
     "TCS.NS",
     "HDFCBANK.NS",
@@ -41,15 +34,15 @@ STOCKS = [
     "SBIN.NS",
     "BAJFINANCE.NS",
     "KOTAKBANK.NS",
-    # New additions
-    "WIPRO.NS",        # IT - confirms INFY/TCS sector trend
-    "AXISBANK.NS",     # Banking - rounds out bank coverage
-    "MARUTI.NS",       # Auto - sector diversification
-    "SUNPHARMA.NS",    # Pharma - defensive, counter-signals
-    "ADANIENT.NS",     # Conglomerate - high volatility
-    "BHARTIARTL.NS",   # Telecom - strong trending stock
-    "TATAMOTORS.NS",   # Auto - high volume, volatile
-    "LTIM.NS",         # IT mid-cap - faster moves
+    # New 8
+    "WIPRO.NS",
+    "AXISBANK.NS",
+    "MARUTI.NS",
+    "SUNPHARMA.NS",
+    "ADANIENT.NS",
+    "BHARTIARTL.NS",
+    "TATAMOTORS.NS",
+    "LTIM.NS",
 ]
 
 UPSTOX_SYMBOLS = {
@@ -73,7 +66,6 @@ UPSTOX_SYMBOLS = {
     "LTIM.NS":       "NSE_EQ|INE214T01019",
 }
 
-# Sector mapping for context notes
 SECTOR_MAP = {
     "TCS":        "IT",
     "INFY":       "IT",
@@ -97,15 +89,46 @@ SECTOR_MAP = {
 
 GOOGLE_SHEET_NAME = "Trading data"
 
-# ── Tunable thresholds ───────────────────────────────────────────────────────
-RSI_OVERSOLD    = 45
-RSI_OVERBOUGHT  = 55
-VOLUME_SPIKE    = 1.5
-ADX_STRONG      = 25   # ADX above this = strong trend, trust signal
-ADX_WEAK        = 20   # ADX below this = choppy, skip signal
-ATR_SL_MULT     = 1.5  # Stop-loss  = LTP - (ATR * multiplier)
-ATR_TGT_MULT    = 2.5  # Target     = LTP + (ATR * multiplier)
-COOLDOWN_HOURS  = 4    # Min hours between same signal for same stock
+# ── Thresholds ───────────────────────────────────────────────────────────────
+RSI_OVERSOLD   = 45
+RSI_OVERBOUGHT = 55
+VOLUME_SPIKE   = 1.5
+ADX_STRONG     = 25
+ADX_WEAK       = 20
+ATR_SL_MULT    = 1.5
+ATR_TGT_MULT   = 2.5
+COOLDOWN_HOURS = 4
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MARKET STATUS
+# ════════════════════════════════════════════════════════════════════════════
+
+def get_market_status() -> str:
+    """
+    Returns:
+      MARKET_OPEN   — 9:15 AM to 3:30 PM IST, Mon–Fri
+      AFTER_HOURS   — Weekday but outside trading hours
+      WEEKEND       — Saturday or Sunday
+    """
+    now = datetime.datetime.now(IST)
+    if now.weekday() >= 5:
+        return "WEEKEND"
+    market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    if market_open <= now <= market_close:
+        return "MARKET_OPEN"
+    return "AFTER_HOURS"
+
+
+def is_noisy_time() -> bool:
+    """First 15 min (9:15–9:30) and last 15 min (3:15–3:30) of session."""
+    now = datetime.datetime.now(IST)
+    open_noise_end    = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    close_noise_start = now.replace(hour=15, minute=15, second=0, microsecond=0)
+    open_time         = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    close_time        = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return (open_time <= now <= open_noise_end) or (close_noise_start <= now <= close_time)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -127,16 +150,14 @@ def get_sheet():
     try:
         sheet = spreadsheet.worksheet("Signals")
     except gspread.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title="Signals", rows=10000, cols=25)
+        sheet = spreadsheet.add_worksheet(title="Signals", rows=10000, cols=27)
         headers = [
-            # Original columns
             "Date", "Time", "Symbol", "Sector", "LTP", "Signal",
             "RSI", "MACD", "MACD_Signal", "EMA9", "EMA21",
             "Volume", "Avg_Volume", "Vol_Ratio", "Confidence", "Notes",
-            # New columns
             "ADX", "BB_Upper", "BB_Mid", "BB_Lower",
             "ATR", "Stop_Loss", "Target", "Risk_Reward",
-            "Nifty_Trend", "Candle_Pattern",
+            "Nifty_Trend", "Candle_Pattern", "Market_Status",
         ]
         sheet.append_row(headers)
     return sheet
@@ -153,9 +174,9 @@ def get_recent_signals(sheet, symbol, hours=COOLDOWN_HOURS):
         if sym_df.empty:
             return None, None
         sym_df = sym_df.tail(1)
-        last_signal = sym_df["Signal"].values[0]
-        last_date   = sym_df["Date"].values[0]
-        last_time   = sym_df["Time"].values[0]
+        last_signal  = sym_df["Signal"].values[0]
+        last_date    = sym_df["Date"].values[0]
+        last_time    = sym_df["Time"].values[0]
         return last_signal, f"{last_date} {last_time}"
     except Exception as e:
         print(f"  Could not read recent signals: {e}")
@@ -167,9 +188,9 @@ def is_cooldown_active(last_signal, last_datetime_str, current_signal):
     if last_signal != current_signal or last_datetime_str is None:
         return False
     try:
-        last_dt = datetime.datetime.strptime(last_datetime_str, "%Y-%m-%d %H:%M")
-        last_dt = IST.localize(last_dt)
-        now     = datetime.datetime.now(IST)
+        last_dt  = datetime.datetime.strptime(last_datetime_str, "%Y-%m-%d %H:%M")
+        last_dt  = IST.localize(last_dt)
+        now      = datetime.datetime.now(IST)
         diff_hrs = (now - last_dt).total_seconds() / 3600
         return diff_hrs < COOLDOWN_HOURS
     except Exception:
@@ -181,9 +202,7 @@ def is_cooldown_active(last_signal, last_datetime_str, current_signal):
 # ════════════════════════════════════════════════════════════════════════════
 
 def fetch_historical(symbol: str) -> pd.DataFrame:
-    """Fetch OHLCV data from Yahoo Finance."""
     import requests
-
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
@@ -192,7 +211,7 @@ def fetch_historical(symbol: str) -> pd.DataFrame:
         "Referer": "https://finance.yahoo.com/",
     }
 
-    # Try 15m data (last 30 days)
+    # 15m data
     url = (
         f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
         f"?interval=15m&range=30d&includePrePost=false"
@@ -211,12 +230,12 @@ def fetch_historical(symbol: str) -> pd.DataFrame:
             "Volume": ohlcv["volume"],
         }, index=pd.to_datetime(result["timestamp"], unit="s", utc=True))
         df.dropna(inplace=True)
-        print(f"  Fetched {len(df)} rows (15m) via Yahoo API")
+        print(f"  Fetched {len(df)} rows (15m)")
         return df
     except Exception as e:
         print(f"  Yahoo 15m failed: {e}")
 
-    # Fallback: daily data
+    # Daily fallback
     url_daily = (
         f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
         f"?interval=1d&range=3mo&includePrePost=false"
@@ -235,7 +254,7 @@ def fetch_historical(symbol: str) -> pd.DataFrame:
             "Volume": ohlcv["volume"],
         }, index=pd.to_datetime(result["timestamp"], unit="s", utc=True))
         df.dropna(inplace=True)
-        print(f"  Fetched {len(df)} rows (daily fallback) via Yahoo API")
+        print(f"  Fetched {len(df)} rows (daily fallback)")
         return df
     except Exception as e2:
         print(f"  Yahoo daily fallback failed: {e2}")
@@ -267,10 +286,6 @@ def fetch_upstox_ltp(symbol: str):
 
 
 def fetch_nifty_trend() -> str:
-    """
-    Returns 'UP', 'DOWN', or 'NEUTRAL' based on Nifty 50 EMA9 vs EMA21.
-    Used to filter signals against broad market direction.
-    """
     df = fetch_historical("^NSEI")
     if df.empty:
         print("  Could not fetch Nifty trend — defaulting to NEUTRAL")
@@ -319,7 +334,6 @@ def calc_volume_ratio(volume, window=20):
 
 
 def calc_atr(df, period=14) -> float:
-    """Average True Range — used for stop-loss and target calculation."""
     high  = df["High"]
     low   = df["Low"]
     close = df["Close"]
@@ -332,30 +346,20 @@ def calc_atr(df, period=14) -> float:
 
 
 def calc_adx(df, period=14) -> float:
-    """
-    Average Directional Index.
-    > 25 = strong trend (trust signal)
-    < 20 = weak/choppy (ignore signal)
-    """
     high  = df["High"]
     low   = df["Low"]
     close = df["Close"]
-
     plus_dm  = high.diff().clip(lower=0)
     minus_dm = (-low.diff()).clip(lower=0)
-
-    # Zero out when opposite move is larger
-    mask = high.diff().abs() <= (-low.diff()).abs()
+    mask  = high.diff().abs() <= (-low.diff()).abs()
     plus_dm[mask] = 0
     mask2 = (-low.diff()).abs() <= high.diff().abs()
     minus_dm[mask2] = 0
-
     tr = pd.concat([
         high - low,
         (high - close.shift()).abs(),
         (low  - close.shift()).abs(),
     ], axis=1).max(axis=1)
-
     atr      = tr.ewm(span=period, adjust=False).mean()
     plus_di  = 100 * plus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
     minus_di = 100 * minus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
@@ -366,7 +370,6 @@ def calc_adx(df, period=14) -> float:
 
 
 def calc_bollinger(series, period=20, std_dev=2):
-    """Returns (upper, mid, lower) Bollinger Bands."""
     sma   = series.rolling(window=period).mean()
     std   = series.rolling(window=period).std()
     upper = (sma + std * std_dev).iloc[-1]
@@ -376,48 +379,27 @@ def calc_bollinger(series, period=20, std_dev=2):
 
 
 def detect_candle_pattern(df) -> str:
-    """
-    Detect basic single/two-candle reversal patterns.
-    Returns pattern name or empty string.
-    """
     if len(df) < 2:
         return ""
-
     o1, h1, l1, c1 = (df["Open"].iloc[-2], df["High"].iloc[-2],
                        df["Low"].iloc[-2],  df["Close"].iloc[-2])
     o2, h2, l2, c2 = (df["Open"].iloc[-1], df["High"].iloc[-1],
                        df["Low"].iloc[-1],  df["Close"].iloc[-1])
-
-    body1 = abs(c1 - o1)
-    body2 = abs(c2 - o2)
+    body2         = abs(c2 - o2)
     candle_range2 = h2 - l2 if h2 != l2 else 0.0001
+    lower_shadow  = min(o2, c2) - l2
+    upper_shadow  = h2 - max(o2, c2)
 
-    # Hammer (bullish reversal)
-    lower_shadow = min(o2, c2) - l2
-    upper_shadow = h2 - max(o2, c2)
-    if (lower_shadow >= 2 * body2 and upper_shadow <= body2 * 0.3
-            and c1 < o1):  # previous candle was bearish
+    if lower_shadow >= 2 * body2 and upper_shadow <= body2 * 0.3 and c1 < o1:
         return "HAMMER"
-
-    # Shooting Star (bearish reversal)
-    if (upper_shadow >= 2 * body2 and lower_shadow <= body2 * 0.3
-            and c1 > o1):  # previous candle was bullish
+    if upper_shadow >= 2 * body2 and lower_shadow <= body2 * 0.3 and c1 > o1:
         return "SHOOTING_STAR"
-
-    # Bullish Engulfing
-    if (c1 < o1 and c2 > o2
-            and c2 > o1 and o2 < c1):
+    if c1 < o1 and c2 > o2 and c2 > o1 and o2 < c1:
         return "BULLISH_ENGULFING"
-
-    # Bearish Engulfing
-    if (c1 > o1 and c2 < o2
-            and c2 < o1 and o2 > c1):
+    if c1 > o1 and c2 < o2 and c2 < o1 and o2 > c1:
         return "BEARISH_ENGULFING"
-
-    # Doji (indecision)
     if body2 <= candle_range2 * 0.1:
         return "DOJI"
-
     return ""
 
 
@@ -425,26 +407,25 @@ def detect_candle_pattern(df) -> str:
 # SIGNAL GENERATION
 # ════════════════════════════════════════════════════════════════════════════
 
-def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
-    """
-    Score-based signal generator.
-    Returns signal dict with all indicator values + stop-loss/target.
-    """
+def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL",
+                    market_status: str = "MARKET_OPEN") -> dict:
+
+    empty = {
+        "signal": "HOLD", "confidence": "LOW",
+        "rsi": 0, "macd": 0, "macd_signal": 0,
+        "ema9": 0, "ema21": 0, "volume": 0, "avg_volume": 0,
+        "vol_ratio": 0, "adx": 0, "bb_upper": 0, "bb_mid": 0,
+        "bb_lower": 0, "atr": 0, "stop_loss": 0, "target": 0,
+        "risk_reward": "N/A", "candle_pattern": "",
+        "notes": "Insufficient data",
+    }
+
     if len(df) < 30:
-        return {
-            "signal": "HOLD", "confidence": "LOW",
-            "rsi": 0, "macd": 0, "macd_signal": 0,
-            "ema9": 0, "ema21": 0, "volume": 0, "avg_volume": 0,
-            "vol_ratio": 0, "adx": 0, "bb_upper": 0, "bb_mid": 0,
-            "bb_lower": 0, "atr": 0, "stop_loss": 0, "target": 0,
-            "risk_reward": "N/A", "candle_pattern": "",
-            "notes": "Insufficient data",
-        }
+        return empty
 
     close  = df["Close"]
     volume = df["Volume"]
 
-    # ── Core indicators ────────────────────────────────────────────────────
     rsi           = calc_rsi(close).iloc[-1]
     macd, macd_sg = calc_macd(close)
     macd_val      = macd.iloc[-1]
@@ -455,17 +436,15 @@ def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
     ema21         = calc_ema(close, 21).iloc[-1]
     vol_ratio     = calc_volume_ratio(volume).iloc[-1]
     avg_volume    = volume.rolling(20).mean().iloc[-1]
-
-    # ── New indicators ─────────────────────────────────────────────────────
-    adx                    = calc_adx(df)
+    adx                        = calc_adx(df)
     bb_upper, bb_mid, bb_lower = calc_bollinger(close)
-    atr                    = calc_atr(df)
-    candle_pattern         = detect_candle_pattern(df)
+    atr                        = calc_atr(df)
+    candle_pattern             = detect_candle_pattern(df)
 
     score       = 0
     notes_parts = []
 
-    # ── RSI ────────────────────────────────────────────────────────────────
+    # RSI
     if rsi < RSI_OVERSOLD:
         score += 1
         notes_parts.append(f"RSI oversold({rsi:.1f})")
@@ -473,7 +452,7 @@ def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
         score -= 1
         notes_parts.append(f"RSI overbought({rsi:.1f})")
 
-    # ── MACD ───────────────────────────────────────────────────────────────
+    # MACD
     macd_crossed_up = (macd_prev < macd_sig_prev) and (macd_val >= macd_sig_val)
     macd_crossed_dn = (macd_prev > macd_sig_prev) and (macd_val <= macd_sig_val)
     if macd_crossed_up:
@@ -487,7 +466,7 @@ def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
     else:
         score -= 0.5
 
-    # ── EMA trend ──────────────────────────────────────────────────────────
+    # EMA
     if ema9 > ema21:
         score += 1
         notes_parts.append("EMA uptrend")
@@ -495,7 +474,7 @@ def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
         score -= 1
         notes_parts.append("EMA downtrend")
 
-    # ── Bollinger Bands ────────────────────────────────────────────────────
+    # Bollinger Bands
     price = close.iloc[-1]
     if price <= bb_lower:
         score += 1
@@ -504,7 +483,7 @@ def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
         score -= 1
         notes_parts.append("BB upper(overbought)")
 
-    # ── Candlestick pattern ────────────────────────────────────────────────
+    # Candlestick
     if candle_pattern in ("HAMMER", "BULLISH_ENGULFING"):
         score += 0.5
         notes_parts.append(f"Candle:{candle_pattern}")
@@ -514,22 +493,18 @@ def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
     elif candle_pattern == "DOJI":
         notes_parts.append("Candle:DOJI(indecision)")
 
-    # ── Volume spike multiplier ────────────────────────────────────────────
+    # Volume spike
     if vol_ratio > VOLUME_SPIKE:
         score = score * 1.5
         notes_parts.append(f"Vol spike x{vol_ratio:.1f}")
 
-    # ── ADX filter ─────────────────────────────────────────────────────────
-    # Weak trend = downgrade any signal to HOLD
-    adx_note = f"ADX={adx:.1f}"
+    # ADX filter
     if adx < ADX_WEAK:
         notes_parts.append(f"ADX weak({adx:.1f}) - signal suppressed")
         signal     = "HOLD"
         confidence = "LOW"
     else:
-        notes_parts.append(adx_note)
-
-        # ── Raw signal from score ──────────────────────────────────────────
+        notes_parts.append(f"ADX={adx:.1f}")
         if score >= 1.5:
             signal     = "BUY"
             confidence = "HIGH" if score >= 3 else "MEDIUM"
@@ -540,7 +515,7 @@ def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
             signal     = "HOLD"
             confidence = "LOW"
 
-        # ── Nifty market trend filter ──────────────────────────────────────
+        # Nifty trend filter
         if nifty_trend == "DOWN" and signal == "BUY":
             confidence = "LOW"
             notes_parts.append("⚠️ BUY vs Nifty DOWN")
@@ -548,87 +523,63 @@ def generate_signal(df, ltp: float, nifty_trend: str = "NEUTRAL") -> dict:
             confidence = "LOW"
             notes_parts.append("⚠️ SELL vs Nifty UP")
 
-    # ── Stop-loss & target via ATR ─────────────────────────────────────────
-    stop_loss    = round(ltp - ATR_SL_MULT * atr, 2)
-    target       = round(ltp + ATR_TGT_MULT * atr, 2)
-    risk         = round(ltp - stop_loss, 2)
-    reward       = round(target - ltp, 2)
-    rr_ratio     = f"1:{round(reward / risk, 2)}" if risk > 0 else "N/A"
+    # After-hours / weekend — downgrade to LOW confidence
+    if market_status in ("AFTER_HOURS", "WEEKEND") and signal != "HOLD":
+        confidence = "LOW"
+        notes_parts.append(f"⚠️ {market_status} signal")
+
+    # ATR stop-loss & target
+    stop_loss = round(ltp - ATR_SL_MULT * atr, 2)
+    target    = round(ltp + ATR_TGT_MULT * atr, 2)
+    risk      = round(ltp - stop_loss, 2)
+    reward    = round(target - ltp, 2)
+    rr_ratio  = f"1:{round(reward / risk, 2)}" if risk > 0 else "N/A"
 
     return {
-        "signal":        signal,
-        "confidence":    confidence,
-        "rsi":           round(rsi, 2),
-        "macd":          round(macd_val, 4),
-        "macd_signal":   round(macd_sig_val, 4),
-        "ema9":          round(ema9, 2),
-        "ema21":         round(ema21, 2),
-        "volume":        int(volume.iloc[-1]),
-        "avg_volume":    int(avg_volume),
-        "vol_ratio":     round(vol_ratio, 2),
-        "adx":           adx,
-        "bb_upper":      bb_upper,
-        "bb_mid":        bb_mid,
-        "bb_lower":      bb_lower,
-        "atr":           round(atr, 2),
-        "stop_loss":     stop_loss,
-        "target":        target,
-        "risk_reward":   rr_ratio,
+        "signal":         signal,
+        "confidence":     confidence,
+        "rsi":            round(rsi, 2),
+        "macd":           round(macd_val, 4),
+        "macd_signal":    round(macd_sig_val, 4),
+        "ema9":           round(ema9, 2),
+        "ema21":          round(ema21, 2),
+        "volume":         int(volume.iloc[-1]),
+        "avg_volume":     int(avg_volume),
+        "vol_ratio":      round(vol_ratio, 2),
+        "adx":            adx,
+        "bb_upper":       bb_upper,
+        "bb_mid":         bb_mid,
+        "bb_lower":       bb_lower,
+        "atr":            round(atr, 2),
+        "stop_loss":      stop_loss,
+        "target":         target,
+        "risk_reward":    rr_ratio,
         "candle_pattern": candle_pattern,
-        "notes":         " | ".join(notes_parts) if notes_parts else "No strong signal",
+        "notes":          " | ".join(notes_parts) if notes_parts else "No strong signal",
     }
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# MARKET HOURS & TIME FILTER
-# ════════════════════════════════════════════════════════════════════════════
-
-def is_market_open() -> bool:
-    now = datetime.datetime.now(IST)
-    if now.weekday() >= 5:
-        return False
-    market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return market_open <= now <= market_close
-
-
-def is_noisy_time() -> bool:
-    """
-    Returns True during the first 15 min (9:15–9:30)
-    and last 15 min (3:15–3:30) of the session.
-    Signals during these windows are less reliable.
-    """
-    now = datetime.datetime.now(IST)
-    open_noise_end   = now.replace(hour=9,  minute=30, second=0, microsecond=0)
-    close_noise_start = now.replace(hour=15, minute=15, second=0, microsecond=0)
-    open_time        = now.replace(hour=9,  minute=15, second=0, microsecond=0)
-    close_time       = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return (open_time <= now <= open_noise_end) or (close_noise_start <= now <= close_time)
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MAIN AGENT
+# MAIN AGENT — runs 24/7, no market hours restriction
 # ════════════════════════════════════════════════════════════════════════════
 
 def run_agent():
     print(f"\n{'='*65}")
-    print(f"Trading Agent v2 — {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
+    print(f"Trading Agent v3 — {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
     print(f"{'='*65}")
 
-    if not is_market_open():
-        print("Market is closed. Exiting.")
-        return
+    market_status = get_market_status()
+    print(f"Market Status: {market_status}")
 
-    noisy = is_noisy_time()
+    noisy = is_noisy_time() if market_status == "MARKET_OPEN" else False
     if noisy:
-        print("⚠️  Noisy window (open/close 15 min) — signals logged with LOW confidence")
+        print("⚠️  Noisy window (open/close 15 min) — signals flagged LOW confidence")
 
-    sheet = get_sheet()
+    sheet    = get_sheet()
     now      = datetime.datetime.now(IST)
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M")
 
-    # Fetch Nifty trend once — used for all stocks
     print("\nFetching Nifty 50 market trend...")
     nifty_trend = fetch_nifty_trend()
 
@@ -651,17 +602,17 @@ def run_agent():
         else:
             print(f"  Upstox LTP: ₹{ltp}")
 
-        result = generate_signal(df, ltp, nifty_trend)
+        result = generate_signal(df, ltp, nifty_trend, market_status)
 
-        # ── Downgrade confidence during noisy window ───────────────────────
+        # Noisy window override
         if noisy and result["signal"] != "HOLD":
             result["confidence"] = "LOW"
             result["notes"] += " | Noisy window"
 
-        # ── Cooldown check — skip duplicate signals ────────────────────────
+        # Cooldown check
         last_signal, last_dt_str = get_recent_signals(sheet, clean_symbol)
         if is_cooldown_active(last_signal, last_dt_str, result["signal"]):
-            print(f"  ⏸ Cooldown active — same {result['signal']} signal within {COOLDOWN_HOURS}h, skipping")
+            print(f"  ⏸ Cooldown active — same {result['signal']} within {COOLDOWN_HOURS}h, skipping")
             continue
 
         row = [
@@ -670,17 +621,16 @@ def run_agent():
             result["macd_signal"], result["ema9"], result["ema21"],
             result["volume"], result["avg_volume"], result["vol_ratio"],
             result["confidence"], result["notes"],
-            # New columns
             result["adx"], result["bb_upper"], result["bb_mid"], result["bb_lower"],
             result["atr"], result["stop_loss"], result["target"], result["risk_reward"],
-            nifty_trend, result["candle_pattern"],
+            nifty_trend, result["candle_pattern"], market_status,
         ]
         rows_to_append.append(row)
 
         icon = ("🟢 BUY" if result["signal"] == "BUY"
                 else ("🔴 SELL" if result["signal"] == "SELL" else "⚪ HOLD"))
         print(
-            f"  {icon} [{result['confidence']}] "
+            f"  {icon} [{result['confidence']}] [{market_status}] "
             f"SL=₹{result['stop_loss']} TGT=₹{result['target']} "
             f"RR={result['risk_reward']} | {result['notes']}"
         )
