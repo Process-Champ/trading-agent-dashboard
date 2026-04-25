@@ -185,6 +185,9 @@ def get_recent_signals(sheet, symbol, hours=COOLDOWN_HOURS):
 
 def is_cooldown_active(last_signal, last_datetime_str, current_signal):
     """True if same signal was given within COOLDOWN_HOURS."""
+    # Never cooldown on HOLD — always log HOLD
+    if current_signal == "HOLD":
+        return False
     if last_signal != current_signal or last_datetime_str is None:
         return False
     try:
