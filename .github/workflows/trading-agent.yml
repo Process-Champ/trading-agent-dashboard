@@ -2,7 +2,7 @@ name: Trading Signal Agent
 
 on:
   schedule:
-    - cron: '0 * * * *'   # Every hour, 24/7, 365 days
+    - cron: '- cron: '*/20 * * * *'   # Every hour, 24/7, 365 days
   workflow_dispatch:        # Manual trigger anytime
 
 jobs:
