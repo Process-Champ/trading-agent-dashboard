@@ -1,8 +1,8 @@
 """
 Filename: trading_agent.py
 Description: Production-Grade Multitasking Momentum Swing Agent
-             with corrected Wilder's Smoothing indicators and 
-             automated Google Sheets logging for Sheet2.
+             with corrected Wilder's Smoothing indicators, firewalled NSE
+             mirror fallback bypass, and automated Google Sheets logging for Sheet2.
 """
 
 import datetime
@@ -103,13 +103,13 @@ def calculate_indicators(df, period=14):
 
 
 # ==============================================================================
-# 2. DYNAMIC UNIVERSE INGESTION
+# 2. DYNAMIC UNIVERSE INGESTION (Bypasses NSE Firewall Cloud Blocks)
 # ==============================================================================
 
 
 def fetch_nifty500_tickers():
-    """Fetches the live Nifty 500 list from NSE India with fallback parsing."""
-    url = "https://niftyindices.com/IndexData/ind_nifty500list.csv"
+    """Fetches the Nifty 500 list securely from a stable mirror to avoid NSE cloud blocks."""
+    url = "https://raw.githubusercontent.com/anirban-m/indian-stock-symbols/main/nifty500.csv"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
@@ -120,20 +120,52 @@ def fetch_nifty500_tickers():
 
         lines = response.text.split("\n")
         tickers = []
-        for line in lines[1:]:
-            columns = line.split(",")
-            if len(columns) > 2:
-                symbol = columns[2].strip()
-                if symbol and symbol != "Symbol":
-                    tickers.append(f"{symbol}.NS")
 
-        logging.info(f"Successfully fetched {len(tickers)} tickers from NSE.")
-        return tickers
+        for line in lines:
+            line = line.strip()
+            if not line or "Symbol" in line:
+                continue
+
+            columns = line.split(",")
+            symbol = columns[0].strip()
+
+            # Clean up and append standard Yahoo Finance suffix
+            if symbol and not symbol.startswith('"') and len(symbol) < 15:
+                tickers.append(f"{symbol}.NS")
+
+        if len(tickers) > 400:
+            logging.info(
+                f"Successfully pulled {len(tickers)} clean tickers via repository mirror."
+            )
+            return tickers
 
     except Exception as e:
-        logging.error(f"Failed fetching Nifty 500 from live source: {e}")
-        logging.info("Falling back to local baseline universe.")
-        return ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "TATAMOTORS.NS"]
+        logging.error(f"Primary mirror request failed: {e}")
+
+    # Baseline high-volume universe fallback if the network mirror fails
+    logging.info("Deploying high-momentum baseline fallback universe.")
+    return [
+        "RELIANCE.NS",
+        "TCS.NS",
+        "INFY.NS",
+        "HDFCBANK.NS",
+        "TATAMOTORS.NS",
+        "ICICIBANK.NS",
+        "SBIN.NS",
+        "BHARTIARTL.NS",
+        "ITC.NS",
+        "ADANIENT.NS",
+        "SUNPHARMA.NS",
+        "AXISBANK.NS",
+        "TITAN.NS",
+        "MARUTI.NS",
+        "HAL.NS",
+        "BEL.NS",
+        "NTPC.NS",
+        "POWERGRID.NS",
+        "TATASTEEL.NS",
+        "COALINDIA.NS",
+    ]
 
 
 # ==============================================================================
@@ -147,7 +179,7 @@ def process_single_stock(ticker):
         stock = yf.Ticker(ticker)
         df = stock.history(period="1y", interval="1d")
 
-        if len(df) < 130:  # Ensures enough past context to compute 6M momentum
+        if len(df) < 130:  # Ensures enough historical data to map 6M momentum
             return None
 
         current_price = df["Close"].iloc[-1]
@@ -280,7 +312,7 @@ def export_signals_to_sheets(signals_df):
     ]
 
     try:
-        # Assumes the service account secret file is dropped into workspace root via workflow
+        # Pulls credentials populated by GitHub secret
         creds = Credentials.from_service_account_file(
             "service_account.json", scopes=scopes
         )
@@ -336,7 +368,7 @@ if __name__ == "__main__":
 
         print("\n" + "=" * 80)
         print(
-            f" SYSTEM MONITORING CODES - {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M')} IST"
+            f" SYSTEM MONITORING REPORT - {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M')} IST"
         )
         print("=" * 80)
         if not final_picks.empty:
