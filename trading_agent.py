@@ -29,7 +29,7 @@ IST = pytz.timezone("Asia/Kolkata")
 # ==============================================================================
 # CONFIG & CONFIGURABLE SETTINGS
 # ==============================================================================
-GOOGLE_SHEET_NAME = 'Trading data'
+GOOGLE_SHEET_NAME = "Trading data"
 WORKSHEET_NAME = "Sheet2"
 
 ADX_MIN = 22
