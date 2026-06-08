@@ -103,13 +103,13 @@ def calculate_indicators(df, period=14):
 
 
 # ==============================================================================
-# 2. DYNAMIC UNIVERSE INGESTION (Bypasses NSE Firewall Cloud Blocks)
+# 2. DYNAMIC UNIVERSE INGESTION (Stable Repository Mirror Source)
 # ==============================================================================
 
 
 def fetch_nifty500_tickers():
-    """Fetches the Nifty 500 list securely from a stable mirror to avoid NSE cloud blocks."""
-    url = "https://raw.githubusercontent.com/anirban-m/indian-stock-symbols/main/nifty500.csv"
+    """Fetches the Nifty 500 list securely from a stable open mirror repository."""
+    url = "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
@@ -123,33 +123,38 @@ def fetch_nifty500_tickers():
 
         for line in lines:
             line = line.strip()
-            if not line or "Symbol" in line:
+            if not line or "Symbol" in line or "Company Name" in line:
                 continue
 
             columns = line.split(",")
-            symbol = columns[0].strip()
+            if len(columns) > 2:
+                # Extracts the true Symbol column from standard NSE structures
+                symbol = columns[2].strip()
 
-            # Clean up and append standard Yahoo Finance suffix
-            if symbol and not symbol.startswith('"') and len(symbol) < 15:
-                tickers.append(f"{symbol}.NS")
+                # Clean strings and safely parse out Yahoo specific additions
+                if symbol and not symbol.startswith('"') and len(symbol) < 12:
+                    # Update obsolete names to current operational symbols
+                    if symbol == "TATAMOTORS":
+                        symbol = "TATAMOTR"
+                    tickers.append(f"{symbol}.NS")
 
         if len(tickers) > 400:
             logging.info(
-                f"Successfully pulled {len(tickers)} clean tickers via repository mirror."
+                f"Successfully pulled {len(tickers)} live Nifty 500 tickers from repository database mirror."
             )
             return tickers
 
     except Exception as e:
         logging.error(f"Primary mirror request failed: {e}")
 
-    # Baseline high-volume universe fallback if the network mirror fails
+    # Baseline core structural universe backup if network mirror encounters blocks
     logging.info("Deploying high-momentum baseline fallback universe.")
     return [
         "RELIANCE.NS",
         "TCS.NS",
         "INFY.NS",
         "HDFCBANK.NS",
-        "TATAMOTORS.NS",
+        "TATAMOTR.NS",
         "ICICIBANK.NS",
         "SBIN.NS",
         "BHARTIARTL.NS",
@@ -179,7 +184,7 @@ def process_single_stock(ticker):
         stock = yf.Ticker(ticker)
         df = stock.history(period="1y", interval="1d")
 
-        if len(df) < 130:  # Ensures enough historical data to map 6M momentum
+        if len(df) < 130:
             return None
 
         current_price = df["Close"].iloc[-1]
@@ -312,7 +317,6 @@ def export_signals_to_sheets(signals_df):
     ]
 
     try:
-        # Pulls credentials populated by GitHub secret
         creds = Credentials.from_service_account_file(
             "service_account.json", scopes=scopes
         )
@@ -331,7 +335,6 @@ def export_signals_to_sheets(signals_df):
         current_date = datetime.datetime.now(IST).strftime("%Y-%m-%d")
         payload = []
 
-        # If worksheet is completely empty, populate headers first
         if len(worksheet.get_all_values()) == 0:
             headers = ["Date Logged"] + list(signals_df.columns)
             payload.append(headers)
