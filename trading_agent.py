@@ -96,9 +96,10 @@ def fetch_nifty500_tickers():
     url = "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # Complete mapping of old legacy symbols to their new active Yahoo Finance tickers
+    # Comprehensive up-to-date mapping of legacy mirror tickers to active Yahoo Finance tickers
     ticker_migration_map = {
         "AMARAJABAT": "ARE&M",         # Amara Raja Energy & Mobility
+        "ADANITRANS": "ADANIENSOL",    # Adani Transmission became Adani Energy Solutions
         "CADILAHC": "ZYDUSLIFE",       # Cadila Healthcare became Zydus Lifesciences
         "MOTHERSUMI": "MOTHERSON",     # Motherson Sumi became Samvardhana Motherson
         "PVR": "PVRINOX",              # PVR merged with Inox Leisure
@@ -123,6 +124,10 @@ def fetch_nifty500_tickers():
         "ALBK": "INDIANB",             # Allahabad Bank merged into Indian Bank
         "ORIENTBANK": "PNB",           # Oriental Bank of Commerce merged into PNB
         "SYNDIBANK": "CANBK",          # Syndicate Bank merged into Canara Bank
+        "KALPATPOWR": "KPIL",          # Kalpataru Power became Kalpataru Projects
+        "MAGMA": "POONAWALLA",         # Magma Fincorp became Poonawalla Fincorp
+        "UJJIVAN": "UJJIVANSFB",       # Map to active Small Finance Bank listing if merged
+        "MCDOWELL-N": "MCDOWELL-N",    # Keep clean or fallback
     }
 
     try:
