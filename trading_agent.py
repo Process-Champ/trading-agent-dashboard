@@ -1,8 +1,8 @@
 """
 Filename: trading_agent.py
 Description: Production-Grade Multitasking Momentum Swing Agent
-             with corrected Wilder's Smoothing indicators, firewalled NSE
-             mirror fallback bypass, and automated Google Sheets logging for Sheet2.
+             with corrected Wilder's Smoothing indicators, self-healing 
+             JSON credential parsers, and automated Google Sheets logging for Sheet2.
 """
 
 import datetime
@@ -128,12 +128,9 @@ def fetch_nifty500_tickers():
 
             columns = line.split(",")
             if len(columns) > 2:
-                # Extracts the true Symbol column from standard NSE structures
                 symbol = columns[2].strip()
 
-                # Clean strings and safely parse out Yahoo specific additions
                 if symbol and not symbol.startswith('"') and len(symbol) < 12:
-                    # Update obsolete names to current operational symbols
                     if symbol == "TATAMOTORS":
                         symbol = "TATAMOTR"
                     tickers.append(f"{symbol}.NS")
@@ -147,7 +144,6 @@ def fetch_nifty500_tickers():
     except Exception as e:
         logging.error(f"Primary mirror request failed: {e}")
 
-    # Baseline core structural universe backup if network mirror encounters blocks
     logging.info("Deploying high-momentum baseline fallback universe.")
     return [
         "RELIANCE.NS",
@@ -301,7 +297,7 @@ def evaluate_execution_signals(top_momentum_pool):
 
 
 # ==============================================================================
-# 5. GOOGLE SHEETS AUTOMATION EXPORT PIPELINE
+# 5. GOOGLE SHEETS AUTOMATION EXPORT PIPELINE (With Self-Healing JSON Parser)
 # ==============================================================================
 
 
@@ -317,9 +313,23 @@ def export_signals_to_sheets(signals_df):
     ]
 
     try:
-        creds = Credentials.from_service_account_file(
-            "service_account.json", scopes=scopes
-        )
+        # Load raw credentials text from disk
+        with open("service_account.json", "r") as f:
+            raw_credentials_content = f.read()
+
+        try:
+            # Try parsing directly first
+            info = json.loads(raw_credentials_content)
+        except json.JSONDecodeError:
+            # Self-Healing Layer: Fixes invalid single quotes common in manual configuration copies
+            logging.warning(
+                "Detecting structural syntax errors inside credentials JSON file. Launching auto-repair..."
+            )
+            sanitized_content = raw_credentials_content.replace("'", '"')
+            info = json.loads(sanitized_content)
+
+        # Authenticate using standard dictionary definitions instead of raw text maps
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
         gc = gspread.authorize(creds)
 
         spreadsheet = gc.open(GOOGLE_SHEET_NAME)
