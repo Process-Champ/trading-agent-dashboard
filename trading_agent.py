@@ -96,6 +96,35 @@ def fetch_nifty500_tickers():
     url = "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
     headers = {"User-Agent": "Mozilla/5.0"}
 
+    # Complete mapping of old legacy symbols to their new active Yahoo Finance tickers
+    ticker_migration_map = {
+        "AMARAJABAT": "ARE&M",         # Amara Raja Energy & Mobility
+        "CADILAHC": "ZYDUSLIFE",       # Cadila Healthcare became Zydus Lifesciences
+        "MOTHERSUMI": "MOTHERSON",     # Motherson Sumi became Samvardhana Motherson
+        "PVR": "PVRINOX",              # PVR merged with Inox Leisure
+        "INOXLEISUR": "PVRINOX",        # Inox side of the merger
+        "GMRINFRA": "GMRIFTP",         # GMR Infrastructure restructuring
+        "INFRATEL": "INDUSTOWER",      # Bharti Infratel became Indus Towers
+        "L&TFH": "LTF",                # L&T Finance Holdings shortened to LTF
+        "LTI": "LTIM",                 # LTI and Mindtree merged into LTIMindtree
+        "MINDTREE": "LTIM",
+        "MINDAIND": "UNOMINDA",        # Minda Industries became Uno Minda
+        "SRTRANSFIN": "SHRIRAMFIN",    # Shriram Transport became Shriram Finance
+        "SHRIRAMCIT": "SHRIRAMFIN",
+        "TATAGLOBAL": "TATACONSUM",    # Tata Global Beverages became Tata Consumer Products
+        "TATACOFFEE": "TATACONSUM",    # Tata Coffee merged into Tata Consumer
+        "WABCOINDIA": "ZFCOMM",        # Wabco became ZF Commercial Vehicle
+        "WELSPUNIND": "WELSPUNLIV",    # Welspun India became Welspun Living
+        "PHILIPCARB": "PCBL",          # Phillips Carbon Black became PCBL
+        "MAHINDCIE": "CIEINDIA",       # Mahindra CIE became CIE Automotive India
+        "STRTECH": "STLTECH",          # Sterlite Technologies updated name
+        "ANDHRABANK": "UNIONBANK",     # Merged into Union Bank of India
+        "CORPBANK": "UNIONBANK",
+        "ALBK": "INDIANB",             # Allahabad Bank merged into Indian Bank
+        "ORIENTBANK": "PNB",           # Oriental Bank of Commerce merged into PNB
+        "SYNDIBANK": "CANBK",          # Syndicate Bank merged into Canara Bank
+    }
+
     try:
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
@@ -108,14 +137,27 @@ def fetch_nifty500_tickers():
                 continue
             columns = line.split(",")
             if len(columns) > 2:
-                symbol = columns[2].strip()
-                if symbol and not symbol.startswith('"') and len(symbol) < 12:
-                    tickers.append(f"{symbol}.NS")
+                symbol = columns[2].strip().replace('"', '') # Clean up potential quotes
+                
+                if symbol:
+                    # Check if the symbol has changed over time. If yes, map to the active one.
+                    if symbol in ticker_migration_map:
+                        symbol = ticker_migration_map[symbol]
+                    
+                    ticker_with_ext = f"{symbol}.NS"
+                    if ticker_with_ext not in tickers and len(symbol) < 12:
+                        tickers.append(ticker_with_ext)
 
         if len(tickers) > 400:
-            logging.info(f"Successfully pulled {len(tickers)} live Nifty 500 tickers.")
+            logging.info(f"Successfully pulled {len(tickers)} live Nifty 500 tickers (with auto-corrections applied).")
             return tickers
+            
     except Exception as e:
+        logging.error(f"Primary mirror request failed: {e}")
+
+    logging.info("Deploying high-momentum baseline fallback universe.")
+    return ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "SBIN.NS"]
+except Exception as e:
         logging.error(f"Primary mirror request failed: {e}")
 
     logging.info("Deploying high-momentum baseline fallback universe.")
