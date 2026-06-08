@@ -2,9 +2,8 @@ name: Run Momentum Trading Scanner
 
 on:
   schedule:
-    # Runs at 10:30 AM UTC (which is exactly 4:00 PM IST) Monday through Friday
     - cron: '30 10 * * 1-5'
-  workflow_dispatch: # This allows you to click a button and run it manually anytime
+  workflow_dispatch:
 
 jobs:
   scan-market:
@@ -27,8 +26,9 @@ jobs:
 
     - name: Hydrate Google Credentials from Secret Vault
       run: |
-        # CHANGED: Now matches your existing secret name perfectly
-        echo "${{ secrets.GOOGLE_CREDENTIALS_JSON }}" > service_account.json
+        cat << 'EOF' > service_account.json
+        ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        EOF
 
     - name: Execute Agent Script
       run: python trading_agent.py
