@@ -157,11 +157,6 @@ def fetch_nifty500_tickers():
 
     logging.info("Deploying high-momentum baseline fallback universe.")
     return ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "SBIN.NS"]
-except Exception as e:
-        logging.error(f"Primary mirror request failed: {e}")
-
-    logging.info("Deploying high-momentum baseline fallback universe.")
-    return ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "SBIN.NS"]
 
 # ==============================================================================
 # 3. CONCURRENT / MULTITASKING PIPELINE
