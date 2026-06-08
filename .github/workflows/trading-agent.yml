@@ -1,38 +1,10 @@
-name: Trading Signal Agent
+name: Run Momentum Trading Scanner
 
 on:
-  workflow_dispatch:        # Manual trigger anytime
+  workflow_dispatch: # Allows you to trigger it via GitHub API or manual button
+  repository_dispatch:
+    types: [external_clock_trigger] # Allows external cron apps to trigger it via Webhook
 
 jobs:
-  run-trading-agent:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install \
-            pandas \
-            numpy \
-            gspread \
-            google-auth \
-            pytz \
-            requests \
-            upstox-python-sdk
-
-      - name: Run trading agent
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
-        run: |
-          python agent.py
+  scan-market:
+# ... rest of your workflow steps remain exactly the same
